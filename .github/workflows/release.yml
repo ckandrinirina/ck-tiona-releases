@@ -1,0 +1,176 @@
+name: Release
+
+# Lives in the public ckandrinirina/ck-tiona-releases repo (public repos get free Actions minutes;
+# the private source repo has none). Kept and tested in the source repo under public-ci/.
+# Run by hand for a tag of the private repo:
+#   gh workflow run release.yml -R ckandrinirina/ck-tiona-releases -f tag=vX.Y.Z
+# It builds every installer from that tag and publishes them as this repo's latest release.
+# Setup: docs/areas/release.md.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "The tag of ckandrinirina/tiona to release, such as v1.0.0"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  # Fails at once, naming every problem, before any build starts.
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      # The private source at the tag; SOURCE_TOKEN can read it. The token is not kept in .git.
+      - uses: actions/checkout@v7
+        with:
+          repository: ckandrinirina/tiona
+          ref: ${{ inputs.tag }}
+          token: ${{ secrets.SOURCE_TOKEN }}
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: lts/*
+      - name: Check the tag, the native versions and the secrets
+        run: node scripts/checkVersion.ts
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+          SOURCE_TOKEN: ${{ secrets.SOURCE_TOKEN }}
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+
+  desktop:
+    needs: check
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - os: macos-latest
+            files: |
+              release/*.dmg
+              release/*.zip
+              release/latest-mac.yml
+          - os: windows-latest
+            files: |
+              release/*.exe
+              release/latest.yml
+    runs-on: ${{ matrix.os }}
+    steps:
+      # The private source at the tag; SOURCE_TOKEN can read it. The token is not kept in .git.
+      - uses: actions/checkout@v7
+        with:
+          repository: ckandrinirina/tiona
+          ref: ${{ inputs.tag }}
+          token: ${{ secrets.SOURCE_TOKEN }}
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: lts/*
+          cache: npm
+      - run: npm ci
+      # No Developer ID yet: electron-builder ad-hoc signs (mac.identity "-") and does not notarize.
+      - name: Build the macOS app (ad-hoc signed)
+        if: runner.os == 'macOS'
+        run: npm run dist:mac
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+      - name: Build the Windows installer
+        if: runner.os == 'Windows'
+        run: npm run dist:win
+        env:
+          # The Apple certificate must not be taken for a Windows one.
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: tiona-${{ matrix.os }}
+          path: ${{ matrix.files }}
+          if-no-files-found: error
+
+  android:
+    needs: check
+    runs-on: ubuntu-latest
+    steps:
+      # The private source at the tag; SOURCE_TOKEN can read it. The token is not kept in .git.
+      - uses: actions/checkout@v7
+        with:
+          repository: ckandrinirina/tiona
+          ref: ${{ inputs.tag }}
+          token: ${{ secrets.SOURCE_TOKEN }}
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: lts/*
+          cache: npm
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: android-actions/setup-android@v4
+      - run: npm ci
+      - run: npm run build:mobile
+      - run: npx cap sync android
+      - name: Decode the keystore
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/release.keystore"
+      - name: Build the signed release APK
+        run: ./gradlew assembleRelease
+        working-directory: android
+        env:
+          ANDROID_KEYSTORE_PATH: ${{ runner.temp }}/release.keystore
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+      - name: Name the APK after the version
+        run: |
+          version=$(node -p "require('./package.json').version")
+          mv android/app/build/outputs/apk/release/app-release.apk "CK-Tiona-$version.apk"
+      - name: Delete the keystore
+        if: always()
+        run: rm -f "$RUNNER_TEMP/release.keystore"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: tiona-android
+          path: CK-Tiona-*.apk
+          if-no-files-found: error
+
+  publish:
+    needs: [desktop, android]
+    runs-on: ubuntu-latest
+    # Creates the release in this repo with the run's own token.
+    permissions:
+      contents: write
+    steps:
+      # The private source at the tag; SOURCE_TOKEN can read it. The token is not kept in .git.
+      - uses: actions/checkout@v7
+        with:
+          repository: ckandrinirina/tiona
+          ref: ${{ inputs.tag }}
+          token: ${{ secrets.SOURCE_TOKEN }}
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: lts/*
+      - uses: actions/download-artifact@v8
+        with:
+          path: assets
+          merge-multiple: true
+      - name: Write latest.json
+        run: node scripts/latestJson.ts assets/latest.json
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          gh release create "$RELEASE_TAG" \
+            assets/*.dmg assets/*.zip assets/*.exe assets/*.apk \
+            assets/latest.yml assets/latest-mac.yml assets/latest.json \
+            --repo ckandrinirina/ck-tiona-releases \
+            --title "CK-Tiona ${RELEASE_TAG#v}" \
+            --notes "CK-Tiona ${RELEASE_TAG#v}
+
+          macOS : au premier lancement, macOS bloque l'app (elle n'est pas encore signée par Apple). Ouvrez Réglages Système › Confidentialité et sécurité, puis cliquez sur « Ouvrir quand même ». Sur Mac, les mises à jour se téléchargent depuis cette page." \
+            --latest
