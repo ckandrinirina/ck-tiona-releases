@@ -71,9 +71,12 @@ jobs:
           node-version: lts/*
           cache: npm
       # `npm run sounds` (a prebuild step) re-encodes the piano samples with ffmpeg.
+      # Homebrew's plain ffmpeg has no libvorbis; ffmpeg-full has it but is keg-only.
       - name: Install ffmpeg (macOS)
         if: runner.os == 'macOS'
-        run: brew install ffmpeg
+        run: |
+          brew install ffmpeg-full
+          echo "$(brew --prefix ffmpeg-full)/bin" >> "$GITHUB_PATH"
       - name: Install ffmpeg (Windows)
         if: runner.os == 'Windows'
         run: choco install ffmpeg -y --no-progress
