@@ -70,6 +70,13 @@ jobs:
         with:
           node-version: lts/*
           cache: npm
+      # `npm run sounds` (a prebuild step) re-encodes the piano samples with ffmpeg.
+      - name: Install ffmpeg (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ffmpeg
+      - name: Install ffmpeg (Windows)
+        if: runner.os == 'Windows'
+        run: choco install ffmpeg -y --no-progress
       - run: npm ci
       # No Developer ID yet: electron-builder ad-hoc signs (mac.identity "-") and does not notarize.
       - name: Build the macOS app (ad-hoc signed)
@@ -109,6 +116,9 @@ jobs:
           distribution: temurin
           java-version: "21"
       - uses: android-actions/setup-android@v4
+      # `npm run sounds` (a prebuild step) re-encodes the piano samples with ffmpeg.
+      - name: Install ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
       - run: npm ci
       - run: npm run build:mobile
       - run: npx cap sync android
@@ -171,6 +181,8 @@ jobs:
             --repo ckandrinirina/ck-tiona-releases \
             --title "CK-Tiona ${RELEASE_TAG#v}" \
             --notes "CK-Tiona ${RELEASE_TAG#v}
+
+          macOS : choisissez le fichier de votre Mac. « arm64 » (.dmg) pour un Mac Apple M1 ou plus récent, « x64 » (.dmg) pour un Mac Intel. Les fichiers .zip servent aux mises à jour.
 
           macOS : au premier lancement, macOS bloque l'app (elle n'est pas encore signée par Apple). Ouvrez Réglages Système › Confidentialité et sécurité, puis cliquez sur « Ouvrir quand même ». Sur Mac, les mises à jour se téléchargent depuis cette page." \
             --latest
