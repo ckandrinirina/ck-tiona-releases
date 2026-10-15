@@ -1,0 +1,51 @@
+name: Site
+
+# Lives in the public ckandrinirina/ck-tiona-releases repo, next to release.yml, and publishes
+# the website to this repo's GitHub Pages. Kept and tested in the source repo under public-ci/.
+# Run by hand after a change to site/:
+#   gh workflow run site.yml -R ckandrinirina/ck-tiona-releases
+# Setup: docs/areas/release.md.
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "The branch or tag of ckandrinirina/tiona to build"
+        required: false
+        default: main
+        type: string
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Two deploys never run at once.
+concurrency:
+  group: site
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      # The site imports the app's design tokens and about.ts, so the whole private repo is needed.
+      - uses: actions/checkout@v7
+        with:
+          repository: ckandrinirina/tiona
+          ref: ${{ inputs.ref }}
+          token: ${{ secrets.SOURCE_TOKEN }}
+          persist-credentials: false
+      # Builds site/ and uploads it as the Pages artifact.
+      - uses: withastro/action@v6
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5
